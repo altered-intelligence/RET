@@ -1,0 +1,5 @@
+name = "head-tails"
+version = "0.1.0"
+description = "Reports the first and last 24 bytes of a file as hex"
+formats = ["*"]
+entry = ["python3", "head_tails.py"]

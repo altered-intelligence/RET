@@ -1,0 +1,33 @@
+[package]
+name = "ret"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "RET — Reverse Engineering Toolkit. The local, evidence-first reverse engineering workbench. Understand any binary, app, or artifact with your own agent or from the terminal."
+license = "MIT"
+authors = ["RET contributors"]
+keywords = ["reverse-engineering", "binary-analysis", "forensics", "mcp", "cli", "static-analysis", "toolkit"]
+categories = ["command-line-utilities", "development-tools", "forensics"]
+
+[[bin]]
+name = "ret"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+rayon = "1.10"
+base64 = "0.22"
+tiny_http = "0.12"
+miniz_oxide = "0.8"
+toml = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

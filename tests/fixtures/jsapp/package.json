@@ -1,0 +1,8 @@
+{
+  "name": "demo-app",
+  "version": "1.2.3",
+  "main": "src/index.js",
+  "scripts": { "start": "electron ." },
+  "dependencies": { "fastify": "^4.0.0", "axios": "^1.6.0" },
+  "devDependencies": { "esbuild": "^0.19.0" }
+}
