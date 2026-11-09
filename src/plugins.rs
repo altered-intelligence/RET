@@ -150,28 +150,52 @@ pub fn run(plugin: &Plugin, artifact: &Path) -> Result<Vec<Finding>> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let out = cmd.output().map_err(|e| {
-        Error::provider_missing(
-            format!("plugin:{}", plugin.manifest.name),
-            format!("failed to spawn '{}': {e}", plugin.manifest.entry.join(" ")),
-        )
-    })?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(Error::internal(format!(
-            "plugin '{}' exited with {:?}: {}",
-            plugin.manifest.name,
-            out.status.code(),
-            stderr.trim().chars().take(600).collect::<String>()
-        )));
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let mut child = cmd.spawn().map_err(|e| Error::internal(format!("plugin spawn: {e}")))?;
+    let (tx, rx) = mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    for (is_stdout, stream) in [(true, Box::new(stdout) as Box<dyn Read + Send>),
+                                (false, Box::new(stderr) as Box<dyn Read + Send>)] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stream.take(MAX_PLUGIN_OUTPUT + 1).read_to_end(&mut bytes);
+            let _ = tx.send((is_stdout, bytes, result.is_ok()));
+        });
     }
-    if out.stdout.len() > MAX_PLUGIN_OUTPUT as usize {
-        return Err(Error::limit(format!(
-            "plugin '{}' produced more than 4 MiB of output",
-            plugin.manifest.name
-        )));
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut error_output = Vec::new();
+    let mut received = 0;
+    loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::limit("plugin exceeded 30 second deadline"));
+        }
+        if let Ok((is_stdout, bytes, ok)) = rx.recv_timeout(Duration::from_millis(10)) {
+            if !ok || bytes.len() > MAX_PLUGIN_OUTPUT as usize {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::limit("plugin output exceeded limit or could not be read"));
+            }
+            if is_stdout { output = bytes; } else { error_output = bytes; }
+            received += 1;
+        }
+        if received == 2 {
+            if let Some(status) = child.try_wait().map_err(|e| Error::internal(e.to_string()))? {
+                if !status.success() {
+                    return Err(Error::internal(format!("plugin failed: {}", String::from_utf8_lossy(&error_output).chars().take(600).collect::<String>())));
+                }
+                break;
+            }
+        }
     }
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = String::from_utf8_lossy(&output);
     let parsed: serde_json::Value = serde_json::from_str(text.trim()).map_err(|e| {
         Error::malformed(format!(
             "plugin '{}' printed non-JSON to stdout: {e}",
@@ -261,5 +285,21 @@ fn parse_confidence(s: &str) -> Confidence {
         "direct" => Confidence::Direct,
         "derived" => Confidence::Derived,
         _ => Confidence::Inferred,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod resource_tests {
+    use super::*;
+    #[test]
+    fn oversized_stderr_is_rejected_before_exit() {
+        let plugin = Plugin {
+            manifest: PluginManifest { name: "bounded-output-test".into(), version: "".into(), description: "".into(), formats: vec![], entry: vec!["sh".into(), "-c".into(), "while :; do printf '0123456789012345678901234567890123456789012345678901234567890123456789' >&2; done".into()] },
+            dir: std::env::current_dir().unwrap(),
+        };
+        let start = std::time::Instant::now();
+        let result = run(&plugin, Path::new("Cargo.toml"));
+        assert!(result.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(20));
     }
 }
