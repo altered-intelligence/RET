@@ -16,6 +16,11 @@ upload the artifact; all analysis is static and local.
 - `inspect_javascript_application(path)` — JS app / Electron focus (package
   deps, module graph, ASAR, routes, boundaries, sourcemaps).
 - `search_strings(path, min_len)` — printable strings with byte offsets.
+- `extract_iocs(path)` — URLs, IPv4s, domains, e-mails, MD5/SHA1/SHA256
+  literals, registry keys, and file paths with byte offsets (ASCII/UTF-8 and
+  UTF-16LE). Evidence-first: every indicator cites the bytes it came from.
+- `entropy_profile(path, window, threshold)` — Shannon-entropy map with
+  high-entropy regions as byte ranges (packed/encrypted-looking content).
 - `compare_artifacts(a, b)` — structural diff of two artifacts.
 - `batch_inventory(root)` — directory scan: kinds, counts, findings.
 - `provider_status()` — which native engines (objdump/r2) are on PATH.

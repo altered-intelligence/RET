@@ -385,3 +385,72 @@ fn html_escape(s: &str) -> String {
     }
     out
 }
+
+/// Render a whole case as SARIF 2.1.0 so RET findings flow into the tools
+/// that already speak it: GitHub code scanning, IDEs, and CI gates. Each
+/// finding becomes a `result` with RET's evidence, confidence, and
+/// limitations preserved under `properties` — the byte-level provenance
+/// survives the format conversion.
+pub fn sarif_case(case: &Case) -> String {
+    let mut rules: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for f in &case.findings {
+        rules.entry(f.id.clone()).or_insert_with(|| {
+            serde_json::json!({
+                "id": f.id,
+                "shortDescription": {
+                    "text": f.claim.chars().take(120).collect::<String>()
+                },
+            })
+        });
+        let level = match f.severity {
+            Severity::Critical => "error",
+            Severity::Warning => "warning",
+            Severity::Info | Severity::Note => "note",
+        };
+        let evidence: Vec<serde_json::Value> = f
+            .evidence
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "label": e.label,
+                    "value": e.value,
+                    "provenance": e.provenance.label(),
+                    "location": e.location,
+                })
+            })
+            .collect();
+        let mut result = serde_json::json!({
+            "ruleId": f.id,
+            "level": level,
+            "message": { "text": f.claim },
+            "properties": {
+                "confidence": f.confidence.label(),
+                "evidence": evidence,
+                "limitations": f.limitations,
+                "produced_at": f.produced_at.to_rfc3339(),
+            },
+        });
+        if let Some(run) = f.run {
+            result["properties"]["run"] = serde_json::json!(run);
+        }
+        results.push(result);
+    }
+
+    let sarif = serde_json::json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [ {
+            "tool": {
+                "driver": {
+                    "name": "RET",
+                    "informationUri": "https://github.com/altered-intelligence/RET",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "rules": rules.values().collect::<Vec<&serde_json::Value>>(),
+                }
+            },
+            "results": results,
+        } ],
+    });
+    serde_json::to_string_pretty(&sarif).unwrap_or_else(|_| "{}".into())
+}

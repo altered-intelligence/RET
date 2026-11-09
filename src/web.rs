@@ -24,8 +24,9 @@ pub fn serve(bind: &str, port: u16, case_dir: PathBuf) -> Result<()> {
     let case_dir = Arc::new(case_dir);
     for request in server.incoming_requests() {
         let dir = Arc::clone(&case_dir);
+        let bind = bind.to_string();
         std::thread::spawn(move || {
-            if let Err(e) = handle(request, &dir) {
+            if let Err(e) = handle(request, &dir, &bind, port) {
                 eprintln!("dashboard request failed: {e}");
             }
         });
@@ -38,8 +39,8 @@ fn json_response(request: Request, code: u16, value: &serde_json::Value) -> Resu
     let mut resp = Response::from_string(text);
     resp = resp.with_status_code(StatusCode(code));
     resp = resp.with_header(Header::from_bytes("Content-Type", "application/json; charset=utf-8").unwrap());
-    resp = resp.with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
     resp = resp.with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+    resp = resp.with_header(Header::from_bytes("Vary", "Origin").unwrap());
     let _ = request.respond(resp);
     Ok(())
 }
@@ -48,12 +49,50 @@ fn text_response(request: Request, code: u16, content_type: &str, body: &str) ->
     let mut resp = Response::from_string(body.to_string());
     resp = resp.with_status_code(StatusCode(code));
     resp = resp.with_header(Header::from_bytes("Content-Type", content_type).unwrap());
-    resp = resp.with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+    resp = resp.with_header(Header::from_bytes("Vary", "Origin").unwrap());
     let _ = request.respond(resp);
     Ok(())
 }
 
-fn handle(mut request: Request, case_dir: &PathBuf) -> Result<()> {
+fn header_value(request: &Request, key: &'static str) -> Option<String> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv(key))
+        .map(|h| h.value.as_str().to_string())
+}
+
+/// Only browser contexts on the same origin may call the dashboard API.
+///
+/// The dashboard itself is served from the same bind/port, so its fetches are
+/// same-origin and need no CORS header at all; non-browser callers (curl,
+/// scripts, agents) do not enforce CORS. A web page browsed elsewhere is a
+/// *different* origin — and a wildcard `Access-Control-Allow-Origin: *` used
+/// to let any such page drive the local API and read case data. That header
+/// is gone; cross-origin browser requests now get 403.
+fn same_origin(origin: &str, bind: &str, port: u16) -> bool {
+    let allowed = [
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
+        format!("http://[::1]:{port}"),
+        format!("http://{bind}:{port}"),
+    ];
+    allowed.iter().any(|a| a == origin)
+}
+
+fn handle(mut request: Request, case_dir: &PathBuf, bind: &str, port: u16) -> Result<()> {
+    if let Some(origin) = header_value(&request, "Origin") {
+        if !same_origin(&origin, bind, port) {
+            return json_response(
+                request,
+                403,
+                &serde_json::json!({
+                    "error": "cross-origin requests to the RET dashboard API are not allowed",
+                    "origin": origin,
+                }),
+            );
+        }
+    }
     let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();

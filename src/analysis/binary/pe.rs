@@ -139,6 +139,27 @@ pub fn analyze(ctx: &AnalysisContext) -> Result<AnalysisReport> {
         }
         report.facts.insert("pe.imports".into(), serde_json::json!(imp));
         findings.push(imf);
+
+        // imphash: the pefile-compatible MD5 over the lowercased import
+        // table. Build-stable across recompiles with the same imports, so it
+        // is the first-class similarity key for PE artifacts.
+        let hash = imphash(&imp);
+        let mut ihf = Finding::new(
+            "pe.imphash",
+            format!("imphash {hash}"),
+            Severity::Info,
+            Confidence::Derived,
+        );
+        ihf.evidence.push(Evidence::derived(
+            "pe.imphash",
+            hash.clone(),
+            Location::entity("import", "import table"),
+        ));
+        ihf.limitations.push(
+            "computed over the DLL and function names this parser observed (bounded at 256 DLLs / 4096 thunks each); import tables truncated by packers change the hash by design".into(),
+        );
+        findings.push(ihf);
+        report.facts.insert("pe.imphash".into(), serde_json::json!(hash));
     }
 
     // Exports
@@ -486,6 +507,41 @@ fn imports(b: &[u8], pe: &Pe) -> Option<Vec<(String, Vec<String>)>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// imphash: MD5 over the lowercased import table in pefile's canonical
+/// format — for each DLL, `<dll>.<func1>,<func2>...` concatenated; ordinal
+/// imports render as `ordN`.
+fn imphash(imp: &[(String, Vec<String>)]) -> String {
+    md5_hex(canonical_import_string(imp).as_bytes())
+}
+
+fn canonical_import_string(imp: &[(String, Vec<String>)]) -> String {
+    let mut s = String::new();
+    for (dll, fns) in imp {
+        s.push_str(&dll.to_lowercase());
+        s.push('.');
+        let names: Vec<String> = fns
+            .iter()
+            .map(|f| {
+                if let Some(n) = f.strip_prefix("ordinal#") {
+                    format!("ord{n}")
+                } else {
+                    f.to_lowercase()
+                }
+            })
+            .collect();
+        s.push_str(&names.join(","));
+    }
+    s
+}
+
+fn md5_hex(data: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    let mut h = Md5::new();
+    h.update(data);
+    let d = h.finalize();
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn exports(b: &[u8], pe: &Pe) -> Option<Vec<(String, u64)>> {
     let dir = pe.data_dirs.get(DIR_EXPORT)?;
     if dir.0 == 0 || dir.1 == 0 {
@@ -604,5 +660,40 @@ fn subsystem_name(s: u16) -> &'static str {
         14 => "XBOX",
         16 => "WINDOWS_BOOT_APPLICATION",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imphash_matches_pefile_canonical_input() {
+        // pefile's imphash concatenates, for each DLL in table order,
+        // `<lowercased dll>.<lowercased fn1>,<fn2>...`; ordinals render as
+        // `ordN`. The hash is the MD5 of that string.
+        let imports = vec![
+            (
+                "KERNEL32.dll".to_string(),
+                vec!["CreateFileW".to_string(), "CloseHandle".to_string()],
+            ),
+            (
+                "WS2_32.dll".to_string(),
+                vec!["ordinal#1".to_string(), "socket".to_string()],
+            ),
+        ];
+        let expected_input = "kernel32.dll.createfilew,closehandlews2_32.dll.ord1,socket";
+        let expected = md5_hex(expected_input.as_bytes());
+        assert_eq!(imphash(&imports), expected);
+    }
+
+    #[test]
+    fn imphash_normalizes_casing_but_keeps_function_order() {
+        let a = vec![("a.dll".to_string(), vec!["f".to_string()])];
+        let b = vec![("A.DLL".to_string(), vec!["F".to_string()])];
+        assert_eq!(imphash(&a), imphash(&b), "casing is normalized");
+        let c = vec![("a.dll".to_string(), vec!["f".to_string(), "g".to_string()])];
+        let d = vec![("a.dll".to_string(), vec!["g".to_string(), "f".to_string()])];
+        assert_ne!(imphash(&c), imphash(&d), "function order matters (pefile semantics)");
     }
 }

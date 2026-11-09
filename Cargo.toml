@@ -1,6 +1,6 @@
 [package]
 name = "ret"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 description = "RET — Reverse Engineering Toolkit. The local, evidence-first reverse engineering workbench. Understand any binary, app, or artifact with your own agent or from the terminal."
@@ -26,6 +26,7 @@ base64 = "0.22"
 tiny_http = "0.12"
 miniz_oxide = "0.8"
 toml = "0.8"
+md-5 = "0.10"
 
 [profile.release]
 lto = true

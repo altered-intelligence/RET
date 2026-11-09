@@ -254,6 +254,56 @@ fn tool_search_strings(args: &Value) -> std::result::Result<String, String> {
     })).map_err(|e| e.to_string())
 }
 
+fn tool_extract_iocs(args: &Value) -> std::result::Result<String, String> {
+    let path = PathBuf::from(str_arg(args, "path")?);
+    let settings = Settings::default();
+    let max = num_arg(args, "max", 100) as usize;
+    let report = crate::analysis::iocs::analyze(&path, &settings).map_err(|e| e.to_string())?;
+    let mut items = report.detail.clone().unwrap_or_else(|| json!([]));
+    if let Some(arr) = items.as_array_mut() {
+        arr.truncate(max);
+    }
+    let counts: Vec<Value> = report
+        .facts
+        .iter()
+        .filter(|(k, _)| k.starts_with("iocs.") && k.ends_with(".count"))
+        .map(|(k, v)| {
+            json!({
+                "kind": k.trim_start_matches("iocs.").trim_end_matches(".count"),
+                "count": v,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({
+        "path": path.display().to_string(),
+        "total": report.facts.get("iocs.total").cloned().unwrap_or(json!(0)),
+        "counts": counts,
+        "indicators": items,
+        "_note": "every indicator carries offset/len/encoding citing its bytes; a match is evidence a pattern exists, not proof of malicious use",
+    }))
+    .map_err(|e| e.to_string())
+}
+
+fn tool_entropy_profile(args: &Value) -> std::result::Result<String, String> {
+    let path = PathBuf::from(str_arg(args, "path")?);
+    let settings = Settings::default();
+    let window = num_arg(args, "window", 4096) as usize;
+    let threshold = args.get("threshold").and_then(|v| v.as_f64()).unwrap_or(7.0);
+    let report =
+        crate::analysis::entropy::analyze(&path, &settings, window, threshold).map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&json!({
+        "path": path.display().to_string(),
+        "overall_entropy": report.facts.get("entropy.overall").cloned().unwrap_or(json!(null)),
+        "window_bytes": window,
+        "threshold": threshold,
+        "high_region_count": report.facts.get("entropy.high_region_count").cloned().unwrap_or(json!(0)),
+        "regions": report.facts.get("entropy.regions").cloned().unwrap_or(json!([])),
+        "findings": report.findings,
+        "_note": "high entropy suggests compressed/encrypted/packed content; compressed resources and signature blocks also score high — verify before concluding",
+    }))
+    .map_err(|e| e.to_string())
+}
+
 fn tool_compare(args: &Value) -> std::result::Result<String, String> {
     let a = PathBuf::from(str_arg(args, "a")?);
     let b = PathBuf::from(str_arg(args, "b")?);
@@ -392,6 +442,33 @@ fn tools() -> Vec<Tool> {
             "required": ["path"],
         }),
         call: tool_search_strings,
+    },
+    Tool {
+        name: "extract_iocs",
+        description: "Extract indicators of compromise — URLs, IPv4s, domains, e-mails, MD5/SHA1/SHA256 literals, registry keys, file paths — with byte offsets, from ASCII/UTF-8 and UTF-16LE strings. Pattern match, not a verdict.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "max": { "type": "integer", "default": 100 },
+            },
+            "required": ["path"],
+        }),
+        call: tool_extract_iocs,
+    },
+    Tool {
+        name: "entropy_profile",
+        description: "Shannon-entropy profile of a file: overall entropy plus high-entropy regions as byte ranges (packed/encrypted-looking content).",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "window": { "type": "integer", "default": 4096 },
+                "threshold": { "type": "number", "default": 7.0 },
+            },
+            "required": ["path"],
+        }),
+        call: tool_entropy_profile,
     },
     Tool {
         name: "compare_artifacts",

@@ -6,11 +6,13 @@ RET analyzes binaries, apps, archives and network captures **entirely on your ma
 
 ```
 ret analyze ./malware.bin --record
+ret iocs ./malware.bin      # indicators of compromise with byte offsets
+ret entropy ./malware.bin   # entropy map; flags packed/encrypted-looking regions
 ret compare before.apk after.apk
 ret batch ./vendor --record
 ret serve            # embedded web dashboard
 ret mcp              # expose the same analysis to your agent (MCP)
-ret report           # export the case as Markdown or standalone HTML
+ret report           # export the case as Markdown, HTML, or SARIF
 ```
 
 ![RET dashboard analyzing an ELF binary](docs/screenshots/dashboard-analyze.png)
@@ -55,7 +57,7 @@ You point it at a binary, an app bundle, an archive, a SQLite database, an AI mo
 
 Everything is computed **locally**. Artifacts are never modified, executed, or uploaded. Nothing leaves your machine.
 
-RET speaks the same language as modern AI agents: it ships a built-in **MCP server** (11 tools) so Claude, GPT-based agents, or any MCP client can analyze artifacts the same way the CLI does — with the same evidence model and the same safety rails.
+RET speaks the same language as modern AI agents: it ships a built-in **MCP server** (13 tools) so Claude, GPT-based agents, or any MCP client can analyze artifacts the same way the CLI does — with the same evidence model and the same safety rails.
 
 ## Why RET is useful
 
@@ -65,7 +67,7 @@ RET speaks the same language as modern AI agents: it ships a built-in **MCP serv
 | **A supply-chain auditor** | Scan a whole `vendor/` directory in parallel, record snapshots, and get a precise structural diff of what changed between two versions of a dependency — byte changes vs. metadata-only changes. |
 | **An app-security engineer** | Inspect Electron/JS apps for boundaries (main / preload / renderer), ASAR contents, routes, and sourcemaps; check ELF/PE/Mach-O hardening (NX, RELRO, canary, PIE). |
 | **A reverse engineer** | Get a fast, honest inventory of any artifact before you commit to opening it in IDA/Ghidra/Binary Ninja — and keep an append-only case file of everything you observed. |
-| **An AI-agent builder** | Give your agent 11 structured MCP tools that return findings with byte-level evidence, so conclusions are *verifiable* instead of hallucinated. |
+| **An AI-agent builder** | Give your agent 13 structured MCP tools that return findings with byte-level evidence, so conclusions are *verifiable* instead of hallucinated. |
 | **A CTF player / student** | Learn how file formats actually work — every finding points at the exact bytes that prove it. |
 
 ## What makes RET unique
@@ -88,7 +90,7 @@ Recording an artifact derives a **structural digest**: a canonical hash of the a
 Every `record` appends findings, snapshots, and hash history into a human-inspectable directory (`.ret/case/`) of plain JSON/JSONL files. It is designed to be committed, diffed, and exported.
 
 ### 6. Agent-native from day one
-`ret mcp` runs a Model Context Protocol server over stdio (JSON-RPC 2.0) exposing 11 tools. `ret setup` writes a ready-to-merge MCP client registration *and* an agent skill file that teaches any agent how to use RET responsibly.
+`ret mcp` runs a Model Context Protocol server over stdio (JSON-RPC 2.0) exposing 13 tools. `ret setup` writes a ready-to-merge MCP client registration *and* an agent skill file that teaches any agent how to use RET responsibly.
 
 ### 7. Plugins in any language
 Drop an executable plus a tiny `plugin.toml` into `~/.ret/plugins/<name>/` or `./.ret/plugins/<name>/` and RET will run it out-of-process with bounded output — a crashing or hostile plugin can never take RET down. A working demo plugin (`head-tails`) ships with the repository.
@@ -113,7 +115,7 @@ RET occupies a deliberate niche. It is **not** a decompiler or an interactive di
 | Case file / hash history / structural digests | ✔ built in | ✘ | ✘ (limited) | ✘ | ✘ | ✘ | ✘ |
 | Version-to-version structural diffing | ✔ `compare`, incl. against recorded history | ✘ (manual, via BinDiff add-on) | ✔ (Version Tracking, manual) | ✔ (commercial tiers) | ✘ | ✘ | ✘ |
 | Parallel batch directory scanning | ✔ built in | ✘ | ✘ | ✘ | ✘ | partial | ✘ |
-| MCP server for AI agents | ✔ 11 tools, stdio | ✘ | ✘ | ✘ (API only) | ✘ | ✘ | ✔ (API, cloud) |
+| MCP server for AI agents | ✔ 13 tools, stdio | ✘ | ✘ | ✘ (API only) | ✘ | ✘ | ✔ (API, cloud) |
 | Generated agent skill / client config | ✔ `ret setup` | ✘ | ✘ | ✘ | ✘ | ✘ | ✘ |
 | HAR / web-capture analysis with credential redaction | ✔ | ✘ | ✘ | ✘ | ✘ | ✘ | ✘ |
 | SQLite, AI-model (GGUF/safetensors), WASM parsers | ✔ | ✘ | ✘ | ✘ | ✘ | partial | ✘ |
@@ -587,7 +589,7 @@ Registration (merge into your client's MCP config):
 - `ret-agent-skill.md` — drop it into your agent's skills directory (or paste it into the system prompt). It teaches the agent the tool set, the confidence model, and safety practices (e.g. *never quote secrets from strings output*).
 - `ret-mcp-client.json` — merge into Claude Desktop, or any MCP client config.
 
-Then run `ret mcp` (the registration points at it) and your agent gets all 11 tools. See [Agent integration](#agent-integration-mcp).
+Then run `ret mcp` (the registration points at it) and your agent gets all 13 tools. See [Agent integration](#agent-integration-mcp).
 
 ## Command reference
 
@@ -601,7 +603,7 @@ ret compare    <a> [<b>]     structural diff             [--history] [--case-dir
 ret record     <path>        analyze + archive into the case   [--case-dir DIR] [--description TEXT]
                                                                    [--snapshot-only]
 ret history    <path>        recorded snapshots          [--case-dir DIR] [--last N]
-ret report                   export the case             [--case-dir DIR] [--out markdown|html]
+ret report                   export the case             [--case-dir DIR] [--out markdown|html|sarif]
                                                          [--output FILE]
 ret plugins    list|run      list plugins / run_plugin <name> <path>
 ret doctor                   environment & dependency check    [--format F]
@@ -609,6 +611,8 @@ ret serve                    embedded web dashboard      [--port 8100] [--bind 1
 ret mcp                      MCP server over stdio (for agents)
 ret disassemble <path>        objdump/radare2 disassembly [--engine objdump|radare2] [--needle TEXT]
 ret strings    <path>        printable strings           [--min N] [--max N]
+ret iocs       <path>        IOC extraction              [--record] [--case-dir DIR]
+ret entropy    <path>        entropy profile             [--window N] [--threshold BITS] [--record]
 ret setup                    write agent skill + MCP client registration
 ```
 
@@ -663,6 +667,8 @@ The server identifies itself as `ret-mcp`:
 | `inspect_managed_assembly(path)` | .NET / CLR assembly focus |
 | `inspect_javascript_application(path)` | JS app / Electron focus (deps, modules, ASAR, boundaries) |
 | `search_strings(path, min_len, max)` | Printable strings with byte offsets |
+| `extract_iocs(path, max)` | IOC extraction with byte offsets (URLs, IPs, domains, e-mails, hashes, registry keys, paths; ASCII/UTF-8 + UTF-16LE) |
+| `entropy_profile(path, window, threshold)` | Shannon-entropy map with high-entropy regions as byte ranges |
 | `compare_artifacts(a, b)` | Structural diff of two artifacts |
 | `batch_inventory(root, depth, max_items)` | Directory scan summary |
 | `provider_status()` | Which external engines are on PATH |
@@ -736,7 +742,7 @@ Run it with `ret plugins run head-tails <path>`.
 - **Credential redaction by default.** HAR bodies are scanned for bearer tokens and JWT-shaped strings before storage; `--no-redact` opts out.
 - **Agents are nudged to be safe.** The generated agent skill instructs agents never to echo secrets from `search_strings`.
 - **Plugins are sandboxed by process.** Bounded output, JSON-validated, isolated working directory.
-- **The dashboard binds to 127.0.0.1** by default; the JSON API adds `Access-Control-Allow-Origin: *` only so local tools can call it — the server never leaves your machine.
+- **The dashboard binds to 127.0.0.1** by default and the API is same-origin only: the dashboard is served from the same bind/port, non-browser callers (curl, scripts, agents) are unaffected, and cross-origin *browser* requests are refused with 403 — a web page you browse elsewhere cannot drive your local API or read case data. (Before v0.2.0 the API answered with `Access-Control-Allow-Origin: *`, which allowed exactly that.) The server never leaves your machine.
 
 ## Development
 
@@ -791,7 +797,7 @@ ret/
 │   ├── output.rs            human/json/jsonl/yaml renderers
 │   ├── report.rs            markdown/html case + report export
 │   ├── plugins.rs           plugin discovery + sandboxed execution
-│   ├── mcp.rs               MCP server (11 tools)
+│   ├── mcp.rs               MCP server (13 tools)
 │   └── web.rs               embedded dashboard
 ├── .ret/plugins/head-tails/ bundled demo plugin
 ├── skills/ret-agent-skill.md  the agent skill (generated copy)

@@ -24,7 +24,7 @@ use crate::output::{Format, Output};
         records every conclusion with its evidence (byte locations, confidence, \
         limitations) into a case file, and exposes the same analysis to terminals, \
         agents (MCP), and a local web dashboard.",
-    after_help = "Global options:\n  --format    output format: human, json, jsonl, yaml\n  --no-color  disable ANSI colors\n  --no-redact disable credential redaction in HAR payloads\n\nExamples:\n  ret analyze ./sample.elf\n  ret analyze ./app --record\n  ret batch ./vendor --record\n  ret compare app.v1 app.v2\n  ret serve --port 8100\n  ret mcp\n  ret doctor"
+    after_help = "Global options:\n  --format    output format: human, json, jsonl, yaml\n  --no-color  disable ANSI colors\n  --no-redact disable credential redaction in HAR payloads\n\nExamples:\n  ret analyze ./sample.elf\n  ret analyze ./app --record\n  ret iocs ./sample.bin\n  ret entropy ./sample.bin\n  ret batch ./vendor --record\n  ret compare app.v1 app.v2\n  ret report --out sarif --output case.sarif\n  ret serve --port 8100\n  ret mcp\n  ret doctor"
 )]
 struct Cli {
     #[arg(long, global = true, default_value = "human", value_name = "FMT",
@@ -55,7 +55,7 @@ enum Command {
     Record(RecordArgs),
     /// Show recorded snapshots for an artifact path.
     History(HistoryArgs),
-    /// Export the case file as a Markdown or standalone HTML report.
+    /// Export the case file as a Markdown, standalone HTML, or SARIF 2.1.0 report.
     Report(ReportArgs),
     /// List and run user plugins.
     #[command(subcommand)]
@@ -70,6 +70,10 @@ enum Command {
     Disassemble(DisassembleArgs),
     /// Extract printable strings from a file.
     Strings(StringsArgs),
+    /// Extract indicators of compromise (URLs, IPs, hashes, paths...) with byte offsets.
+    Iocs(IocsArgs),
+    /// Profile Shannon entropy across an artifact and flag high-entropy regions.
+    Entropy(EntropyArgs),
     /// Write the agent skill and MCP client registration to the current directory.
     Setup,
 }
@@ -223,6 +227,38 @@ struct StringsArgs {
     max: usize,
 }
 
+#[derive(clap::Args)]
+struct IocsArgs {
+    /// File to extract indicators from.
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+    /// Record the report into the case file as a new run.
+    #[arg(long, action = ArgAction::SetTrue)]
+    record: bool,
+    /// Case directory (defaults to ./.ret/case).
+    #[arg(long, value_name = "DIR")]
+    case_dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct EntropyArgs {
+    /// File to profile.
+    #[arg(value_name = "PATH")]
+    path: PathBuf,
+    /// Window size in bytes for the entropy map.
+    #[arg(long, default_value_t = 4096, value_name = "N")]
+    window: usize,
+    /// High-entropy threshold in bits/byte.
+    #[arg(long, default_value_t = 7.0, value_name = "BITS")]
+    threshold: f64,
+    /// Record the report into the case file as a new run.
+    #[arg(long, action = ArgAction::SetTrue)]
+    record: bool,
+    /// Case directory (defaults to ./.ret/case).
+    #[arg(long, value_name = "DIR")]
+    case_dir: Option<PathBuf>,
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let format = Format::parse(&cli.format).map_err(Error::invalid_arg)?;
@@ -245,6 +281,8 @@ pub fn run() -> Result<()> {
         Command::Mcp => crate::mcp::serve_stdio(),
         Command::Disassemble(d) => cmd_disassemble(d, format, color),
         Command::Strings(s) => cmd_strings(s, prefs, format, color),
+        Command::Iocs(i) => cmd_iocs(i, prefs, format, color),
+        Command::Entropy(e) => cmd_entropy(e, prefs, format, color),
         Command::Setup => cmd_setup(),
     }
 }
@@ -456,9 +494,10 @@ fn cmd_report(r: ReportArgs, format: Format, _color: bool) -> Result<()> {
     let text = match out_fmt.as_str() {
         "html" => crate::report::html_case(&case),
         "markdown" | "md" => crate::report::markdown_case(&case),
+        "sarif" => crate::report::sarif_case(&case),
         other => {
             return Err(Error::invalid_arg(format!(
-                "report --out must be markdown or html, got '{other}'"
+                "report --out must be markdown, html, or sarif, got '{other}'"
             )))
         }
     };
@@ -690,6 +729,38 @@ fn cmd_strings(s: StringsArgs, prefs: AnalysisPrefs, format: Format, color: bool
     Ok(())
 }
 
+fn cmd_iocs(i: IocsArgs, prefs: AnalysisPrefs, format: Format, color: bool) -> Result<()> {
+    let settings = prefs.settings();
+    let report = crate::analysis::iocs::analyze(&i.path, &settings)?;
+    if i.record {
+        let dir = case_dir(&i.case_dir);
+        let mut case = crate::core::casefile::open_or_create(&dir, "ioc extraction")?;
+        let run = case.snapshots.len() as u64 + 1;
+        case.add_report(&report, run);
+        case.add_snapshot(snapshot_of(&report));
+        crate::core::casefile::save(&case, &dir)?;
+    }
+    let mut out = std::io::stdout().lock();
+    crate::output::write_output(&Output::Report(&report), format, color, &mut out)?;
+    Ok(())
+}
+
+fn cmd_entropy(e: EntropyArgs, prefs: AnalysisPrefs, format: Format, color: bool) -> Result<()> {
+    let settings = prefs.settings();
+    let report = crate::analysis::entropy::analyze(&e.path, &settings, e.window, e.threshold)?;
+    if e.record {
+        let dir = case_dir(&e.case_dir);
+        let mut case = crate::core::casefile::open_or_create(&dir, "entropy profile")?;
+        let run = case.snapshots.len() as u64 + 1;
+        case.add_report(&report, run);
+        case.add_snapshot(snapshot_of(&report));
+        crate::core::casefile::save(&case, &dir)?;
+    }
+    let mut out = std::io::stdout().lock();
+    crate::output::write_output(&Output::Report(&report), format, color, &mut out)?;
+    Ok(())
+}
+
 const SKILL_TEXT: &str = r#"# RET — Agent Skill
 
 You have access to RET (Reverse Engineering Toolkit), a local, evidence-first
@@ -708,6 +779,11 @@ upload the artifact; all analysis is static and local.
 - `inspect_javascript_application(path)` — JS app / Electron focus (package
   deps, module graph, ASAR, routes, boundaries, sourcemaps).
 - `search_strings(path, min_len)` — printable strings with byte offsets.
+- `extract_iocs(path)` — URLs, IPv4s, domains, e-mails, MD5/SHA1/SHA256
+  literals, registry keys, and file paths with byte offsets (ASCII/UTF-8 and
+  UTF-16LE). Evidence-first: every indicator cites the bytes it came from.
+- `entropy_profile(path, window, threshold)` — Shannon-entropy map with
+  high-entropy regions as byte ranges (packed/encrypted-looking content).
 - `compare_artifacts(a, b)` — structural diff of two artifacts.
 - `batch_inventory(root)` — directory scan: kinds, counts, findings.
 - `provider_status()` — which native engines (objdump/r2) are on PATH.
